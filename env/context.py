@@ -10,7 +10,13 @@ from urllib.parse import urljoin
 from env.cloud import get_cloud_profile
 from env.utility.file_management import File_Management
 from env.utility.workspace_filter import parse_workspace_ids
-from env.utility.http import aio_request, url_path, DEFAULT_MAX_RETRIES
+from env.utility.http import (
+    DEFAULT_MAX_CONCURRENCY,
+    DEFAULT_MAX_RETRIES,
+    RequestCoordinator,
+    aio_request,
+    url_path,
+)
 
 # On Linux/WSL, aiohttp tries IPv6 first which causes SSL handshake timeouts.
 # Force IPv4 on Linux. On Windows, aiohttp resolves correctly without this constraint.
@@ -57,6 +63,8 @@ class Context:
         self.include_workspace_ids = frozenset()
         self.exclude_workspace_ids = frozenset()
         self.http_max_retries = DEFAULT_MAX_RETRIES
+        self.http_max_concurrency = DEFAULT_MAX_CONCURRENCY
+        self.http_coordinator = RequestCoordinator(self.http_max_concurrency)
         self.scan_status_poll_seconds = 20
         self.itemjobs_concurrency = 3
         self.exclude_personal_workspaces = True
@@ -121,6 +129,13 @@ class Context:
         if value < 0:
             raise ValueError("HTTP_MAX_RETRIES must be >= 0")
         self.http_max_retries = value
+
+    def set_http_max_concurrency(self, value):
+        value = int(value)
+        if value < 1:
+            raise ValueError("HTTP_MAX_CONCURRENCY must be >= 1")
+        self.http_max_concurrency = value
+        self.http_coordinator = RequestCoordinator(value)
 
     def set_scan_status_poll_seconds(self, value):
         value = int(value)
@@ -370,6 +385,7 @@ class Context:
             logger=self.logger,
             timeout=_TIMEOUT,
             connector_kwargs=_CONNECTOR_KWARGS,
+            coordinator=self.http_coordinator,
         )
 
         if not response.ok:

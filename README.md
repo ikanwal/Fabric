@@ -292,10 +292,11 @@ Follow these in order. Each step says how to confirm it worked.
    WORKSPACE_NAME=<workspace name>
    PATH_IN_LAKEHOUSE=fabricmonitor
    ON_FABRIC=true          # true when the modules run inside Fabric, false when they run elsewhere and write to OneLake
-   HTTP_MAX_RETRIES=6      # optional, see "Throttling and HTTP retries" below
+   HTTP_MAX_CONCURRENCY=3  # set to 1 for a tenant that is already heavily throttled
+   HTTP_MAX_RETRIES=3      # optional, see "Throttling and HTTP retries" below
    ```
    Optionally set `INCLUDE_WORKSPACE_IDS` / `EXCLUDE_WORKSPACE_IDS` to limit scope.
-4. **Run the modules in this order.** Later modules read earlier output, so the order matters. Run them once for a full backfill (`python -m app.monitor --base --modules ...`), then on a schedule.
+4. **Run the modules in this order.** Later modules read earlier output, so the order matters. When selected in the same process, the monitor automatically waits for all other modules before starting ControlPlane. Run them once for a full backfill (`python -m app.monitor --base --modules ...`), then on a schedule.
 
    | Order | Module | Writes | Feeds these master table columns |
    |---|---|---|---|
@@ -327,7 +328,9 @@ Follow these in order. Each step says how to confirm it worked.
 
 ### Throttling and HTTP retries
 
-Every module calls the Power BI, Fabric and Graph APIs through one shared client ([env/utility/http.py](env/utility/http.py)). It retries HTTP 429, any 5xx and network failures, up to `HTTP_MAX_RETRIES` times (default 6). It waits for the server's `Retry-After` header (up to one hour) or uses exponential backoff from 2 to 60 seconds with jitter. Other 4xx responses (400, 401, 403, 404) are never retried. Each retry is logged as `HTTP retry: status=... attempt=n/m wait=...s path=...`.
+Every module uses the request helpers in [env/utility/http.py](env/utility/http.py). A process-wide coordinator limits async and threaded calls together to `HTTP_MAX_CONCURRENCY` (default 3). A 429 publishes its `Retry-After` delay as a shared cooldown, preventing other collectors from immediately replacing the throttled request.
+
+The client retries HTTP 429, 502, 503, 504 and network failures up to `HTTP_MAX_RETRIES` times (default 3). It honors `Retry-After` for up to one hour or uses exponential backoff from 2 to 60 seconds with jitter. Generic HTTP 500 responses are returned immediately because repeatedly replaying persistent relation-endpoint failures can amplify load and cause more 429s. Other 4xx responses are also not retried. Each retry is logged as `HTTP retry: status=... attempt=n/m wait=...s path=...`.
 
 This is not the same as the run retries in the table. `cp_runs_collected` and `cp_failed_runs` describe how the customer's own jobs ran. The HTTP retries only decide whether a module manages to collect its data.
 
@@ -342,7 +345,7 @@ If a module still fails after its retries, rerun that module, then rerun the not
 | `lineage_note` is `item not in lineage_edges` | The item was not in a Catalog scan. Run Catalog with `--base`. |
 | `lineage_note` is `no relations in scanner` | The scanner returned no relations for that item. This is expected for some item types. |
 | Job, source or volume columns are empty for some items | The service principal is not a member of that item's workspace. Add it and rerun ItemJobs and ControlPlane. |
-| Many `HTTP retry: status=429` lines | Power BI admin throttling. Wait for the run to finish, run fewer modules at once, or narrow scope with `INCLUDE_WORKSPACE_IDS`. |
+| Many `HTTP retry: status=429` lines | Service throttling. Let `Retry-After` complete; if it persists, set `HTTP_MAX_CONCURRENCY=1`, run fewer modules, or narrow scope with `INCLUDE_WORKSPACE_IDS`. See [429 throttling and upstream maintenance](docs/429-throttling.md). |
 | Notebook fails with `Row count changed after enrichments` | A lookup has duplicate keys. Check the source folder for duplicated item IDs. |
 | New columns are empty for old events | Run once with `REBUILD = True`. |
 

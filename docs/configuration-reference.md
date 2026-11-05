@@ -82,9 +82,10 @@ Used when running inside a Fabric environment.
 | `EXCLUDE_INACTIVE_WORKSPACES` | `true` | Excludes inactive workspaces from catalog modified-workspace scans. |
 | `INCLUDE_WORKSPACE_IDS` | _(none)_ | Comma-separated workspace GUID allowlist. When set, Catalog scans these workspaces regardless of modification date; Fabric Items and Item Jobs also process only items in these workspaces.|
 | `EXCLUDE_WORKSPACE_IDS` | _(none)_ | Comma-separated workspace GUID denylist. Exclusions take precedence over `INCLUDE_WORKSPACE_IDS`.|
-| `HTTP_MAX_RETRIES` | `6` | Max retries for 429/5xx/network errors across shared REST requests, including `Retry-After` (up to 1 hour) or exponential backoff. 400/401/403/404 are never retried. |
+| `HTTP_MAX_CONCURRENCY` | `3` | Maximum in-flight REST requests across async and threaded collectors in one monitor process. Use `1` as a temporary mitigation for a heavily throttled tenant. `API_MAX_CONCURRENCY` is accepted as a compatibility alias. |
+| `HTTP_MAX_RETRIES` | `3` | Max retries for network errors and HTTP 429/502/503/504. The shared cooldown honors `Retry-After` for up to 1 hour; otherwise exponential backoff is used. Generic HTTP 500 and other 4xx responses are not retried. |
 | `SCAN_STATUS_POLL_SECONDS` | `20` | Seconds between Scanner `scanStatus` polls. |
-| `ITEMJOBS_CONCURRENCY` | `3` | Concurrent per-item calls in the ItemJobs module. |
+| `ITEMJOBS_CONCURRENCY` | `3` | Concurrent ItemJobs work. Actual REST calls remain bounded by `HTTP_MAX_CONCURRENCY`. |
 | `IMPERSONATED_USER_NAME` | _(none)_ | UPN of a user to impersonate for API calls. |
 | `CAPACITY_METRICS_DATASET_ID` | _(none)_ | Dataset ID for the Capacity Metrics module. |
 

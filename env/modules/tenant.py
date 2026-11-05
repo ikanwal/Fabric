@@ -44,6 +44,7 @@ async def main(context=None):
         timeout=120,
         max_retries=context.http_max_retries,
         logger=context.logger,
+        coordinator=getattr(context, "http_coordinator", None),
     )
     if response.status_code == 200:
         result = response.json()

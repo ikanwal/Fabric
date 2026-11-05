@@ -778,7 +778,15 @@ async def main(context=None):
     log_workspace_filter_counts(context.logger, "ControlPlane", item_counts, len(entities))
 
     def call(method, url, hdrs):
-        return request_with_retry(method, url, max_retries=max_retries, logger=context.logger, headers=hdrs, timeout=120)
+        return request_with_retry(
+            method,
+            url,
+            max_retries=max_retries,
+            logger=context.logger,
+            coordinator=getattr(context, "http_coordinator", None),
+            headers=hdrs,
+            timeout=120,
+        )
 
     async def fetch_detail(entity):
         async with sem:

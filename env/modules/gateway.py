@@ -13,6 +13,7 @@ async def _get(context, url, headers):
         timeout=120,
         max_retries=context.http_max_retries,
         logger=context.logger,
+        coordinator=getattr(context, "http_coordinator", None),
     )
 
 

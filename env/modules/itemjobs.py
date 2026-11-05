@@ -36,11 +36,19 @@ SCAN_MAX_MISSES = 3
 SCAN_MAX_FILES = 500
 _max_retries = DEFAULT_MAX_RETRIES
 _logger = None
+_coordinator = None
 
 
 def _call(method, url, headers, **kwargs):
     return request_with_retry(
-        method, url, max_retries=_max_retries, logger=_logger, headers=headers, timeout=120, **kwargs
+        method,
+        url,
+        max_retries=_max_retries,
+        logger=_logger,
+        coordinator=_coordinator,
+        headers=headers,
+        timeout=120,
+        **kwargs,
     )
 
 
@@ -509,9 +517,10 @@ async def main(context=None):
     if context is None:
         raise RuntimeError("Context is None")
 
-    global _max_retries, _logger
+    global _max_retries, _logger, _coordinator
     _max_retries = context.http_max_retries
     _logger = context.logger
+    _coordinator = getattr(context, "http_coordinator", None)
     headers = context.clients['tenant'].get_headers()
     base = context.get_fabric_url("").rstrip("/")
     today = datetime.now()

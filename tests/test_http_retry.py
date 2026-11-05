@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from unittest import mock
 
 import pytest
@@ -11,7 +13,8 @@ from env.config import build_audit
 from env.context import Context
 from env.modules import catalog, itemjobs
 from env.utility import http
-from env.utility.http import parse_retry_after, request_with_retry, retry_wait
+from env.audit import module_phases
+from env.utility.http import RequestCoordinator, parse_retry_after, request_with_retry, retry_wait
 from test_workspace_filter import FakeContext, WORKSPACE_ID
 
 _real_sleep = asyncio.sleep
@@ -45,6 +48,74 @@ def test_sync_helper_retries_429_with_retry_after_and_logs(caplog):
     assert sleeps == [3]
     assert "status=429 attempt=1/4 wait=3.0s path=/v1/items" in caplog.text
     assert "secret" not in caplog.text
+
+
+def test_shared_coordinator_applies_retry_after_to_the_next_attempt():
+    responses = [FakeResponse(429, {"Retry-After": "3"}), FakeResponse(200)]
+    sleeps = []
+    coordinator = RequestCoordinator(1)
+    with mock.patch("requests.request", side_effect=responses):
+        response = request_with_retry(
+            "GET",
+            "https://x.test/v1/items",
+            max_retries=1,
+            sleep=sleeps.append,
+            coordinator=coordinator,
+        )
+    assert response.status_code == 200
+    assert sleeps == pytest.approx([3], abs=0.1)
+
+
+def test_shared_coordinator_publishes_cooldown_before_releasing_permit():
+    events = []
+
+    class RecordingCoordinator(RequestCoordinator):
+        def defer(self, seconds):
+            events.append("defer")
+            super().defer(seconds)
+
+        def release(self):
+            events.append("release")
+            super().release()
+
+    responses = [FakeResponse(429, {"Retry-After": "1"}), FakeResponse(200)]
+    with mock.patch("requests.request", side_effect=responses):
+        request_with_retry(
+            "GET",
+            "https://x.test/v1/items",
+            max_retries=1,
+            sleep=lambda _: None,
+            coordinator=RecordingCoordinator(1),
+        )
+    assert events[:2] == ["defer", "release"]
+
+
+def test_shared_coordinator_limits_threaded_requests():
+    coordinator = RequestCoordinator(1)
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def fake_request(*_args, **_kwargs):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        threading.Event().wait(0.02)
+        with lock:
+            active -= 1
+        return FakeResponse(200)
+
+    with mock.patch("requests.request", side_effect=fake_request):
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(
+                lambda _: request_with_retry(
+                    "GET", "https://x.test/a", coordinator=coordinator
+                ),
+                range(2),
+            ))
+    assert [result.status_code for result in results] == [200, 200]
+    assert peak == 1
 
 
 def test_async_sync_helper_retries_without_blocking_callers():
@@ -127,7 +198,7 @@ def test_invokeapi_recovers_from_429_and_honors_retry_after(monkeypatch, caplog)
 
     assert result == {"value": [1, 2]}
     assert len(hits) == 3
-    assert waits == [2, 2]
+    assert waits == pytest.approx([2, 2], abs=0.1)
     assert caplog.text.count("HTTP retry: status=429") == 2
     assert "path=/v1/thing" in caplog.text
 
@@ -148,7 +219,7 @@ def test_invokeapi_returns_real_status_and_does_not_retry_404(monkeypatch):
     assert len(hits) == 1 and waits == []
 
 
-def test_invokeapi_gives_up_on_persistent_5xx_using_configured_retries(monkeypatch):
+def test_invokeapi_does_not_amplify_generic_500(monkeypatch):
     _patch_sleep(monkeypatch)
     hits = []
 
@@ -161,7 +232,7 @@ def test_invokeapi_gives_up_on_persistent_5xx_using_configured_retries(monkeypat
     result = _run_with_server(handler, lambda url: context.invokeAPI(url, headers={"Authorization": "x"}))
 
     assert result["status_code"] == 500
-    assert len(hits) == 2
+    assert len(hits) == 1
 
 
 def test_invokeapi_post_accepts_202_with_empty_body(monkeypatch):
@@ -180,16 +251,35 @@ def test_invokeapi_post_accepts_202_with_empty_body(monkeypatch):
 
 def test_settings_defaults_and_wiring():
     context = Context()
-    assert (context.http_max_retries, context.scan_status_poll_seconds, context.itemjobs_concurrency) == (6, 20, 3)
+    assert (
+        context.http_max_retries,
+        context.http_max_concurrency,
+        context.scan_status_poll_seconds,
+        context.itemjobs_concurrency,
+    ) == (3, 3, 20, 3)
 
     audit = build_audit({
         "TENANT_ID": "t", "CLIENT_ID": "c", "CLIENT_SECRET": "s",
-        "HTTP_MAX_RETRIES": "2", "SCAN_STATUS_POLL_SECONDS": "5", "ITEMJOBS_CONCURRENCY": "1",
+        "HTTP_MAX_RETRIES": "2", "HTTP_MAX_CONCURRENCY": "1",
+        "SCAN_STATUS_POLL_SECONDS": "5", "ITEMJOBS_CONCURRENCY": "1",
     })
-    assert (audit.context.http_max_retries, audit.context.scan_status_poll_seconds,
-            audit.context.itemjobs_concurrency) == (2, 5, 1)
+    assert (
+        audit.context.http_max_retries,
+        audit.context.http_max_concurrency,
+        audit.context.scan_status_poll_seconds,
+        audit.context.itemjobs_concurrency,
+    ) == (2, 1, 5, 1)
     with pytest.raises(ValueError):
         context.set_itemjobs_concurrency(0)
+    with pytest.raises(ValueError):
+        context.set_http_max_concurrency(0)
+
+
+def test_control_plane_runs_in_a_later_phase():
+    assert module_phases(["ControlPlane", "Catalog", "ItemJobs", "Graph"]) == [
+        ["Catalog", "ItemJobs", "Graph"],
+        ["ControlPlane"],
+    ]
 
 
 class ScanContext(FakeContext):

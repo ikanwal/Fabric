@@ -94,13 +94,19 @@ async def get_lineage(context, headers, today):
     items = [item for item in items if item.get("id") and item.get("workspaceId")]
     log_workspace_filter_counts(context.logger, "FabricItems lineage", workspace_counts, len(items))
 
-    sem = asyncio.Semaphore(5)
+    sem = asyncio.Semaphore(getattr(context, "http_max_concurrency", 3))
     stats = {"ok": 0, "skipped": 0}
     stats_msg = {}
 
     def call(item_url):
         return request_with_retry(
-            "GET", item_url, max_retries=context.http_max_retries, logger=context.logger, headers=headers, timeout=60
+            "GET",
+            item_url,
+            max_retries=context.http_max_retries,
+            logger=context.logger,
+            coordinator=getattr(context, "http_coordinator", None),
+            headers=headers,
+            timeout=60,
         )
 
     async def fetch(item, direction):

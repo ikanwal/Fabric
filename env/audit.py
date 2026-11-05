@@ -21,6 +21,16 @@ import re
 
 content = None
 FABRIC_ONLY_MODULES = {"Domains", "FabricItems", "ItemJobs", "ControlPlane", "Tenant", "Roles", "Workspaces"}
+DEPENDENT_MODULES = {"ControlPlane"}
+
+
+def module_phases(run_jobs):
+    """Keep consumers of Catalog and ItemJobs output in a later phase."""
+    phases = [
+        [module for module in run_jobs if module not in DEPENDENT_MODULES],
+        [module for module in run_jobs if module in DEPENDENT_MODULES],
+    ]
+    return [phase for phase in phases if phase]
 
 
 # from .monitor import main as Monitor
@@ -98,8 +108,6 @@ class Audits:
         
         run_jobs = []
 
-        work_queue = asyncio.Queue()
-
         for module in modules:
             cron = self.context.get_cron(module)
             
@@ -136,10 +144,10 @@ class Audits:
         print(f"Running jobs: {run_jobs}")
 
         try:
-            classes = [globals()[module] for module in run_jobs]
-
-            for module in classes:
-                await work_queue.put(module)
+            phases = [
+                [globals()[module] for module in phase]
+                for phase in module_phases(run_jobs)
+            ]
         except Exception as e:
             self.context.logger.error(f"Error check globals: {e}")
 
@@ -169,19 +177,24 @@ class Audits:
                     failures.append((module_name, exc))
             return failures
 
-        gather_tasks = []
-        for module in run_jobs:
-            gather_tasks.append(asyncio.create_task(task(f"{module}", work_queue, content=self.context)))
-
-        with Timer(text="\nTotal elapsed time: {:.1f}"):
-            results = await asyncio.gather(*gather_tasks, return_exceptions=True)
-
         failures = []
-        for result in results:
-            if isinstance(result, Exception):
-                failures.append(("worker", result))
-            else:
-                failures.extend(result)
+        with Timer(text="\nTotal elapsed time: {:.1f}"):
+            for phase in phases:
+                work_queue = asyncio.Queue()
+                for module in phase:
+                    await work_queue.put(module)
+                gather_tasks = [
+                    asyncio.create_task(task(remove_carriage_returns(module.__doc__), work_queue, content=self.context))
+                    for module in phase
+                ]
+                results = await asyncio.gather(*gather_tasks, return_exceptions=True)
+                for result in results:
+                    if isinstance(result, Exception):
+                        failures.append(("worker", result))
+                    else:
+                        failures.extend(result)
+                if failures:
+                    break
 
         if failures:
             for module_name, failure in failures:
@@ -272,6 +285,9 @@ class Audits:
 
     def set_http_max_retries(self, value):
         self.context.set_http_max_retries(value)
+
+    def set_http_max_concurrency(self, value):
+        self.context.set_http_max_concurrency(value)
 
     def set_scan_status_poll_seconds(self, value):
         self.context.set_scan_status_poll_seconds(value)

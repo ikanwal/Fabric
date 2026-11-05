@@ -13,6 +13,10 @@
 
     "APPLICATION_MODULES": "Activity,Apps,Capacity,CapacityMetrics,Catalog,Domains,FabricItems,Gateway,Graph,Refreshables,RefreshHistory,Roles,Tenant,Workspaces",
     "OUTPUT_PATH": "Data",
+    "HTTP_MAX_CONCURRENCY": "3",
+    "HTTP_MAX_RETRIES": "3",
+    "ITEMJOBS_CONCURRENCY": "3",
+    "SCAN_STATUS_POLL_SECONDS": "20",
 
     "STORAGE_ACCOUNT_CONN_STR": "",
     "STORAGE_ACCOUNT_URL": "https://fabricdemosg.blob.core.windows.net",
